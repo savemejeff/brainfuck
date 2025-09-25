@@ -20,16 +20,42 @@ static int label()
   return l++;
 }
 
+static void usage(const char *exe)
+{
+  printf("Usage: %s [-o outfile] infile\n", exe);
+  exit(-1);
+}
+
 int main(int argc, char **argv)
 {
-  if (argc != 2)
+  const char *sour = NULL;
+  const char *dest = "a.s";
+  for (int i = 1; i < argc; i++)
   {
-    printf("Usage: %s infile\n", argv[0]);
-    exit(1);
+    const char *p = argv[i];
+    if (p[0] != '-')
+    {
+      sour = p;
+      continue;
+    }
+
+    switch (p[1])
+    {
+    case 'o':
+      i++;
+      dest = argv[i];
+      break;
+    default:
+      printf("Unknown flag: %c\n", p[1]);
+      exit(1);
+    }
   }
 
-  const char *sour = argv[1];
-  const char *dest = "a.s";
+  if (sour == NULL)
+  {
+    usage(argv[0]);
+  }
+
   FILE *s = fopen(sour, "rb+");
   FILE *d = fopen(dest, "wb+");
   int lab;

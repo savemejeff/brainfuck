@@ -1,0 +1,29 @@
+This is an implementation of the holy brainf*ck programming language.
+
+This implementation simply transform brainf*ck source code to x86_64 assembly.
+
+## How to build:
+
+You'll need a working c compiler, then simply compile brainfuck.c:
+
+`gcc brainfuck.c`
+
+Or I prepared a Makefile, just run:
+
+`make`
+
+## How to use:
+
+You'll need a working assembler. First run:
+
+`./brainfuck tests/helloworld.bf`
+
+This will get you a assembly code as an output. Then assemble the output file:
+
+`gcc a.s`
+
+## Tests
+
+I grabbed some brainfuck code from https://esolangs.org/wiki/Brainfuck as test cases. Run test by:
+
+`make test`
