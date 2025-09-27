@@ -51,6 +51,11 @@ static void initglob()
   g_deststream = NULL;
 }
 
+static void putback(int c)
+{
+  g_pucback = c;
+}
+
 static int next()
 {
   int c;
@@ -117,10 +122,10 @@ static void genpostamble()
   fputs("\tret\n", g_deststream);
 }
 
-static void genleft()
+static void genleft(int n)
 {
   int l = newlabel();
-  fputs("\tsub\t$1, %r12\n", g_deststream);
+  fprintf(g_deststream, "\tsub\t$%d, %%r12\n", n);
   fputs("\tcmpq\t%r13, %r12\n", g_deststream);
   fprintf(g_deststream, "\tjnb\tL%d\n", l);
   fputs("\tmovl\t$0, %eax\n", g_deststream);
@@ -128,15 +133,31 @@ static void genleft()
   fprintf(g_deststream, "L%d:\n", l);
 }
 
-static void genright()
+static void genright(int n)
 {
   int l = newlabel();
-  fputs("\tadd\t$1, %r12\n", g_deststream);
+  fprintf(g_deststream, "\tadd\t$%d, %%r12\n", n);
   fputs("\tcmpq\t%r14, %r12\n", g_deststream);
   fprintf(g_deststream, "\tjb\tL%d\n", l);
   fputs("\tmovl\t$0, %eax\n", g_deststream);
   fputs("\tcall\terror\n", g_deststream);
   fprintf(g_deststream, "L%d:\n", l);
+}
+
+static int more(int c)
+{
+  int n, cnt = 0;
+  while ((n = next()) != EOF)
+  {
+    if (n == c)
+      cnt++;
+    else
+    {
+      putback(n);
+      break;
+    }
+  }
+  return cnt;
 }
 
 int main(int argc, char **argv)
@@ -186,6 +207,7 @@ int main(int argc, char **argv)
 
   int c;
   int lab;
+  int cnt;
 
   genpreamble();
 
@@ -194,19 +216,23 @@ int main(int argc, char **argv)
     switch (c)
     {
     case '>':
-      genright();
+      cnt = 1 + more(c);
+      genright(cnt);
       break;
     case '<':
-      genleft();
+      cnt = 1 + more(c);
+      genleft(cnt);
       break;
     case '+':
+      cnt = 1 + more(c);
       fputs("\tmovb\t(%r12), %al\n", g_deststream);
-      fputs("\tadd\t$1, %al\n", g_deststream);
+      fprintf(g_deststream, "\tadd\t$%d, %%al\n", cnt);
       fputs("\tmovb\t%al, (%r12)\n", g_deststream);
       break;
     case '-':
+      cnt = 1 + more(c);
       fputs("\tmovb\t(%r12), %al\n", g_deststream);
-      fputs("\tsub\t$1, %al\n", g_deststream);
+      fprintf(g_deststream, "\tsub\t$%d, %%al\n", cnt);
       fputs("\tmovb\t%al, (%r12)\n", g_deststream);
       break;
     case ',':
