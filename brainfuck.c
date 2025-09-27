@@ -1,23 +1,74 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int stack[1024];
-int *sp;
-int l;
+#define STACK_SIZE 1024
+
+int g_stack[STACK_SIZE];
+int *g_sp;
+int g_label;
+int g_line;
+int g_col;
+int g_pucback;
+FILE *g_sourstream;
+FILE *g_deststream;
+
+static void fatal(const char *s)
+{
+  fprintf(stderr, "Error: %s; on Line %d, col %d.\n", s, g_line, g_col);
+  exit(1);
+}
 
 static void push(int n)
 {
-  *(sp++) = n;
+  if (g_sp - g_stack >= STACK_SIZE)
+  {
+    fatal("stack overflow");
+  }
+  *(g_sp++) = n;
 }
 
 static int pop()
 {
-  return *(--sp);
+  if (g_sp == g_stack)
+  {
+    fatal("stack overflow");
+  }
+  return *(--g_sp);
 }
 
-static int label()
+static int newlabel()
 {
-  return l++;
+  return g_label++;
+}
+
+static void initglob()
+{
+  g_sp = g_stack;
+  g_label = 0;
+  g_line = 0;
+  g_col = 0;
+  g_sourstream = NULL;
+  g_deststream = NULL;
+}
+
+static int next()
+{
+  int c;
+  if (g_pucback != 0)
+  {
+    c = g_pucback;
+    g_pucback = 0;
+    return c;
+  }
+
+  c = fgetc(g_sourstream);
+  g_col++;
+  if (c == '\n')
+  {
+    g_col = 0;
+    g_line++;
+  }
+  return c;
 }
 
 static void usage(const char *exe)
@@ -26,8 +77,72 @@ static void usage(const char *exe)
   exit(-1);
 }
 
+static void genpreamble()
+{
+  fputs("\t.bss\n", g_deststream);
+  fputs("buffer:\t.skip 30000\n", g_deststream);
+  fputs("bufferend:", g_deststream);
+
+  fputs("\t.text\n", g_deststream);
+  fputs("\t.section\t.rodata\n", g_deststream);
+  fputs(".LC0:\n", g_deststream);
+  fputs("\t.string\t\"Runtime error: "
+        "pointer out of boundary.\"\n",
+        g_deststream);
+  fputs("\t.text\n", g_deststream);
+  fputs("error:\n", g_deststream);
+  fputs("\tendbr64\n", g_deststream);
+  fputs("\tpushq\t%rbp\n", g_deststream);
+  fputs("\tmovq\t%rsp, %rbp\n", g_deststream);
+  fputs("\tleaq\t.LC0(%rip), %rax\n", g_deststream);
+  fputs("\tmovq\t%rax, %rdi\n", g_deststream);
+  fputs("\tcall\tputs@PLT\n", g_deststream);
+  fputs("\tmovl\t$1, %edi\n", g_deststream);
+  fputs("\tcall\texit@PLT\n", g_deststream);
+
+  fputs("\t.globl\tmain\n", g_deststream);
+  fputs("\t.text\n", g_deststream);
+  fputs("main:\n", g_deststream);
+  fputs("\tpushq\t%rbp\n", g_deststream);
+  fputs("\tmovq\t%rsp, %rbp\n", g_deststream);
+  fputs("\tleaq\tbuffer(%rip), %r12\n", g_deststream);
+  fputs("\tleaq\tbuffer(%rip), %r13\n", g_deststream);
+  fputs("\tleaq\tbufferend(%rip), %r14\n", g_deststream);
+}
+
+static void genpostamble()
+{
+  fputs("\tmovl\t$0, %eax\n", g_deststream);
+  fputs("\tleave\n", g_deststream);
+  fputs("\tret\n", g_deststream);
+}
+
+static void genleft()
+{
+  int l = newlabel();
+  fputs("\tsub\t$1, %r12\n", g_deststream);
+  fputs("\tcmpq\t%r13, %r12\n", g_deststream);
+  fprintf(g_deststream, "\tjnb\tL%d\n", l);
+  fputs("\tmovl\t$0, %eax\n", g_deststream);
+  fputs("\tcall\terror\n", g_deststream);
+  fprintf(g_deststream, "L%d:\n", l);
+}
+
+static void genright()
+{
+  int l = newlabel();
+  fputs("\tadd\t$1, %r12\n", g_deststream);
+  fputs("\tcmpq\t%r14, %r12\n", g_deststream);
+  fprintf(g_deststream, "\tjb\tL%d\n", l);
+  fputs("\tmovl\t$0, %eax\n", g_deststream);
+  fputs("\tcall\terror\n", g_deststream);
+  fprintf(g_deststream, "L%d:\n", l);
+}
+
 int main(int argc, char **argv)
 {
+  initglob();
+
   const char *sour = NULL;
   const char *dest = "a.s";
   for (int i = 1; i < argc; i++)
@@ -56,78 +171,83 @@ int main(int argc, char **argv)
     usage(argv[0]);
   }
 
-  FILE *s = fopen(sour, "rb+");
-  FILE *d = fopen(dest, "wb+");
-  int lab;
-  sp = stack;
-  l = 0;
-
-  fputs("\t.bss\n", d);
-  fputs("buffer:\t.skip 1024\n", d);
-  fputs("\t.globl\tmain\n", d);
-  fputs("\t.text\n", d);
-  fputs("main:\n", d);
-  fputs("\tpushq\t%rbp\n", d);
-  fputs("\tmovq\t%rsp, %rbp\n", d);
-  fputs("\tleaq\tbuffer(%rip), %r12\n", d);
+  g_sourstream = fopen(sour, "rb+");
+  g_deststream = fopen(dest, "wb+");
+  if (g_sourstream == NULL)
+  {
+    fprintf(stderr, "Cannon open '%s'.\n", sour);
+    exit(-1);
+  }
+  if (g_deststream == NULL)
+  {
+    fprintf(stderr, "Cannot open '%s'\n", dest);
+    exit(-1);
+  }
 
   int c;
-  while ((c = fgetc(s)) != EOF)
+  int lab;
+
+  genpreamble();
+
+  while ((c = next()) != EOF)
   {
     switch (c)
     {
     case '>':
-      fputs("\tadd\t$1, %r12\n", d);
+      genright();
       break;
     case '<':
-      fputs("\tsub\t$1, %r12\n", d);
+      genleft();
       break;
     case '+':
-      fputs("\tmovb\t(%r12), %al\n", d);
-      fputs("\tadd\t$1, %al\n", d);
-      fputs("\tmovb\t%al, (%r12)\n", d);
+      fputs("\tmovb\t(%r12), %al\n", g_deststream);
+      fputs("\tadd\t$1, %al\n", g_deststream);
+      fputs("\tmovb\t%al, (%r12)\n", g_deststream);
       break;
     case '-':
-      fputs("\tmovb\t(%r12), %al\n", d);
-      fputs("\tsub\t$1, %al\n", d);
-      fputs("\tmovb\t%al, (%r12)\n", d);
+      fputs("\tmovb\t(%r12), %al\n", g_deststream);
+      fputs("\tsub\t$1, %al\n", g_deststream);
+      fputs("\tmovb\t%al, (%r12)\n", g_deststream);
       break;
     case ',':
-      fputs("\tmovl	$0, %eax\n", d);
-      fputs("\tmovl	$0, %edi\n", d);
-      fputs("\tleaq	(%r12), %rsi\n", d);
-      fputs("\tmovl	$1, %edx\n", d);
-      fputs("\tsyscall\n", d);
+      fputs("\tmovl\t$0, %eax\n", g_deststream);
+      fputs("\tmovl\t$0, %edi\n", g_deststream);
+      fputs("\tleaq\t(%r12), %rsi\n", g_deststream);
+      fputs("\tmovl\t$1, %edx\n", g_deststream);
+      fputs("\tsyscall\n", g_deststream);
       break;
     case '.':
-      fputs("\tmovl	$1, %eax\n", d);
-      fputs("\tmovl	$1, %edi\n", d);
-      fputs("\tleaq	(%r12), %rsi\n", d);
-      fputs("\tmovl	$1, %edx\n", d);
-      fputs("\tsyscall\n", d);
+      fputs("\tmovl\t$1, %eax\n", g_deststream);
+      fputs("\tmovl\t$1, %edi\n", g_deststream);
+      fputs("\tleaq\t(%r12), %rsi\n", g_deststream);
+      fputs("\tmovl\t$1, %edx\n", g_deststream);
+      fputs("\tsyscall\n", g_deststream);
       break;
     case '[':
-      lab = label();
-      fprintf(d, "LS%d:\n", lab);
-      fprintf(d, "\tcmpb\t$0, (%%r12)\n");
-      fprintf(d, "\tje\tLE%d\n", lab);
+      lab = newlabel();
+      fprintf(g_deststream, "LS%d:\n", lab);
+      fprintf(g_deststream, "\tcmpb\t$0, (%%r12)\n");
+      fprintf(g_deststream, "\tje\tLE%d\n", lab);
       push(lab);
       break;
     case ']':
       lab = pop();
-      fprintf(d, "\tcmpb\t$0, (%%r12)\n");
-      fprintf(d, "\tjne\tLS%d\n", lab);
-      fprintf(d, "LE%d:\n", lab);
+      fprintf(g_deststream, "\tcmpb\t$0, (%%r12)\n");
+      fprintf(g_deststream, "\tjne\tLS%d\n", lab);
+      fprintf(g_deststream, "LE%d:\n", lab);
       break;
     default:
-      // fatal();
+      // ignore any other characters
       break;
     }
   }
 
-  fputs("\tmovl\t$0, %eax\n", d);
-  fputs("\tleave\n", d);
-  fputs("\tret\n", d);
+  genpostamble();
+
+  if (g_sp != g_stack)
+  {
+    fatal("missing ']'");
+  }
 
   return 0;
 }
